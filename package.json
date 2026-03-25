@@ -1,6 +1,6 @@
 {
   "name": "weixin-bot-plugin",
-  "version": "0.1.0",
+  "version": "1.0.2",
   "description": "WeChat Bot SDK via iLink Bot API",
   "license": "MIT",
   "author": "zhzhang",
