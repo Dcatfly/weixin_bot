@@ -1,5 +1,30 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { markdownToPlainText } from "./send.js";
+
+// ---------------------------------------------------------------------------
+// Mocks for send function tests
+// ---------------------------------------------------------------------------
+
+vi.mock("../api/api.js", () => ({
+  sendMessage: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../util/random.js", () => ({
+  generateId: vi.fn(),
+}));
+
+import { sendMessage as sendMessageApi } from "../api/api.js";
+import { generateId } from "../util/random.js";
+import {
+  sendMessageWeixin,
+  sendMediaItems,
+  sendImageMessageWeixin,
+  sendVideoMessageWeixin,
+  sendFileMessageWeixin,
+} from "./send.js";
+import { MessageItemType, MessageType, MessageState } from "../api/types.js";
+import type { MessageItem } from "../api/types.js";
+import type { UploadedFileInfo } from "../cdn/upload.js";
 
 describe("markdownToPlainText", () => {
   // --- Code blocks ---
@@ -183,3 +208,322 @@ describe("markdownToPlainText", () => {
     expect(markdownToPlainText("   ")).toBe("");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Send function tests
+// ---------------------------------------------------------------------------
+
+describe("send functions", () => {
+  const BASE_OPTS = {
+    baseUrl: "https://ilinkai.weixin.qq.com",
+    token: "test-token",
+    contextToken: "ctx-tok-1",
+  };
+
+  const UPLOADED: UploadedFileInfo = {
+    filekey: "fk-123",
+    downloadEncryptedQueryParam: "enc_query_param_abc",
+    aeskey: "0123456789abcdef0123456789abcdef", // 32 hex chars = 16 bytes
+    fileSize: 1024,
+    fileSizeCiphertext: 1040,
+  };
+
+  let idCounter: number;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    idCounter = 0;
+    vi.mocked(generateId).mockImplementation(
+      (prefix: string) => `${prefix}:mock-id-${++idCounter}`,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // sendMessageWeixin
+  // -------------------------------------------------------------------------
+
+  describe("sendMessageWeixin", () => {
+    it("throws when contextToken is missing", async () => {
+      await expect(
+        sendMessageWeixin({
+          to: "user-1",
+          text: "hello",
+          opts: { baseUrl: BASE_OPTS.baseUrl, token: BASE_OPTS.token },
+        }),
+      ).rejects.toThrow("contextToken is required");
+      expect(sendMessageApi).not.toHaveBeenCalled();
+    });
+
+    it("sends correct payload with text message", async () => {
+      const result = await sendMessageWeixin({
+        to: "user-1",
+        text: "hello world",
+        opts: BASE_OPTS,
+      });
+
+      expect(sendMessageApi).toHaveBeenCalledOnce();
+      const call = vi.mocked(sendMessageApi).mock.calls[0][0];
+      expect(call.baseUrl).toBe(BASE_OPTS.baseUrl);
+      expect(call.token).toBe(BASE_OPTS.token);
+
+      const msg = call.body.msg!;
+      expect(msg.to_user_id).toBe("user-1");
+      expect(msg.from_user_id).toBe("");
+      expect(msg.message_type).toBe(MessageType.BOT);
+      expect(msg.message_state).toBe(MessageState.FINISH);
+      expect(msg.context_token).toBe("ctx-tok-1");
+      expect(msg.item_list).toHaveLength(1);
+      expect(msg.item_list![0].type).toBe(MessageItemType.TEXT);
+      expect(msg.item_list![0].text_item!.text).toBe("hello world");
+
+      expect(result.messageId).toMatch(/^weixin-bot:mock-id-/);
+    });
+
+    it("sends undefined item_list when text is empty", async () => {
+      await sendMessageWeixin({
+        to: "user-1",
+        text: "",
+        opts: BASE_OPTS,
+      });
+
+      const msg = vi.mocked(sendMessageApi).mock.calls[0][0].body.msg!;
+      expect(msg.item_list).toBeUndefined();
+    });
+
+    it("uses custom clientIdPrefix", async () => {
+      await sendMessageWeixin({
+        to: "user-1",
+        text: "hi",
+        opts: { ...BASE_OPTS, clientIdPrefix: "custom" },
+      });
+
+      expect(generateId).toHaveBeenCalledWith("custom");
+    });
+
+    it("propagates sendMessageApi errors", async () => {
+      const apiError = new Error("network failure");
+      vi.mocked(sendMessageApi).mockRejectedValueOnce(apiError);
+
+      await expect(
+        sendMessageWeixin({ to: "user-1", text: "hi", opts: BASE_OPTS }),
+      ).rejects.toThrow("network failure");
+    });
+  });
+
+// ---------------------------------------------------------------------------
+// sendMediaItems
+// ---------------------------------------------------------------------------
+
+describe("sendMediaItems", () => {
+  const mediaItem: MessageItem = {
+    type: MessageItemType.IMAGE,
+    image_item: { mid_size: 1040 },
+  };
+
+  it("sends only mediaItem when text is empty and returns its clientId", async () => {
+    const result = await sendMediaItems({
+      to: "user-1",
+      text: "",
+      mediaItem,
+      opts: BASE_OPTS,
+      label: "test",
+    });
+
+    expect(sendMessageApi).toHaveBeenCalledOnce();
+    const msg = vi.mocked(sendMessageApi).mock.calls[0][0].body.msg!;
+    expect(msg.item_list).toHaveLength(1);
+    expect(msg.item_list![0].type).toBe(MessageItemType.IMAGE);
+    expect(result.messageId).toBe(msg.client_id);
+  });
+
+  it("sends text and mediaItem as separate requests", async () => {
+    await sendMediaItems({
+      to: "user-1",
+      text: "caption text",
+      mediaItem,
+      opts: BASE_OPTS,
+      label: "test",
+    });
+
+    expect(sendMessageApi).toHaveBeenCalledTimes(2);
+
+    // First call: TEXT item
+    const msg1 = vi.mocked(sendMessageApi).mock.calls[0][0].body.msg!;
+    expect(msg1.item_list![0].type).toBe(MessageItemType.TEXT);
+    expect(msg1.item_list![0].text_item!.text).toBe("caption text");
+
+    // Second call: media item
+    const msg2 = vi.mocked(sendMessageApi).mock.calls[1][0].body.msg!;
+    expect(msg2.item_list![0].type).toBe(MessageItemType.IMAGE);
+  });
+
+  it("uses independent clientId for each request", async () => {
+    await sendMediaItems({
+      to: "user-1",
+      text: "caption",
+      mediaItem,
+      opts: BASE_OPTS,
+      label: "test",
+    });
+
+    const clientId1 = vi.mocked(sendMessageApi).mock.calls[0][0].body.msg!.client_id;
+    const clientId2 = vi.mocked(sendMessageApi).mock.calls[1][0].body.msg!.client_id;
+    expect(clientId1).not.toBe(clientId2);
+  });
+
+  it("returns last clientId as messageId", async () => {
+    const result = await sendMediaItems({
+      to: "user-1",
+      text: "caption",
+      mediaItem,
+      opts: BASE_OPTS,
+      label: "test",
+    });
+
+    const lastClientId = vi.mocked(sendMessageApi).mock.calls[1][0].body.msg!.client_id;
+    expect(result.messageId).toBe(lastClientId);
+  });
+
+  it("propagates errors from sendMessageApi", async () => {
+    vi.mocked(sendMessageApi).mockRejectedValueOnce(new Error("send failed"));
+
+    await expect(
+      sendMediaItems({
+        to: "user-1",
+        text: "",
+        mediaItem,
+        opts: BASE_OPTS,
+        label: "test",
+      }),
+    ).rejects.toThrow("send failed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sendImageMessageWeixin
+// ---------------------------------------------------------------------------
+
+describe("sendImageMessageWeixin", () => {
+  it("throws when contextToken is missing", async () => {
+    await expect(
+      sendImageMessageWeixin({
+        to: "user-1",
+        text: "",
+        uploaded: UPLOADED,
+        opts: { baseUrl: BASE_OPTS.baseUrl, token: BASE_OPTS.token },
+      }),
+    ).rejects.toThrow("contextToken is required");
+  });
+
+  it("constructs correct image_item and delegates to sendMessageApi", async () => {
+    await sendImageMessageWeixin({
+      to: "user-1",
+      text: "",
+      uploaded: UPLOADED,
+      opts: BASE_OPTS,
+    });
+
+    expect(sendMessageApi).toHaveBeenCalled();
+    const msg = vi.mocked(sendMessageApi).mock.calls[0][0].body.msg!;
+    const imageItem = msg.item_list![0];
+
+    expect(imageItem.type).toBe(MessageItemType.IMAGE);
+    expect(imageItem.image_item!.media!.encrypt_query_param).toBe("enc_query_param_abc");
+    expect(imageItem.image_item!.media!.aes_key).toBe(
+      Buffer.from(UPLOADED.aeskey).toString("base64"),
+    );
+    expect(imageItem.image_item!.media!.encrypt_type).toBe(1);
+    expect(imageItem.image_item!.mid_size).toBe(1040);
+  });
+
+  it("sends text caption as separate request before image", async () => {
+    await sendImageMessageWeixin({
+      to: "user-1",
+      text: "check this image",
+      uploaded: UPLOADED,
+      opts: BASE_OPTS,
+    });
+
+    expect(sendMessageApi).toHaveBeenCalledTimes(2);
+    const firstItem = vi.mocked(sendMessageApi).mock.calls[0][0].body.msg!.item_list![0];
+    expect(firstItem.type).toBe(MessageItemType.TEXT);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sendVideoMessageWeixin
+// ---------------------------------------------------------------------------
+
+describe("sendVideoMessageWeixin", () => {
+  it("throws when contextToken is missing", async () => {
+    await expect(
+      sendVideoMessageWeixin({
+        to: "user-1",
+        text: "",
+        uploaded: UPLOADED,
+        opts: { baseUrl: BASE_OPTS.baseUrl, token: BASE_OPTS.token },
+      }),
+    ).rejects.toThrow("contextToken is required");
+  });
+
+  it("constructs correct video_item", async () => {
+    await sendVideoMessageWeixin({
+      to: "user-1",
+      text: "",
+      uploaded: UPLOADED,
+      opts: BASE_OPTS,
+    });
+
+    const msg = vi.mocked(sendMessageApi).mock.calls[0][0].body.msg!;
+    const videoItem = msg.item_list![0];
+
+    expect(videoItem.type).toBe(MessageItemType.VIDEO);
+    expect(videoItem.video_item!.media!.encrypt_query_param).toBe("enc_query_param_abc");
+    expect(videoItem.video_item!.media!.aes_key).toBe(
+      Buffer.from(UPLOADED.aeskey).toString("base64"),
+    );
+    expect(videoItem.video_item!.media!.encrypt_type).toBe(1);
+    expect(videoItem.video_item!.video_size).toBe(1040);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sendFileMessageWeixin
+// ---------------------------------------------------------------------------
+
+describe("sendFileMessageWeixin", () => {
+  it("throws when contextToken is missing", async () => {
+    await expect(
+      sendFileMessageWeixin({
+        to: "user-1",
+        text: "",
+        fileName: "doc.pdf",
+        uploaded: UPLOADED,
+        opts: { baseUrl: BASE_OPTS.baseUrl, token: BASE_OPTS.token },
+      }),
+    ).rejects.toThrow("contextToken is required");
+  });
+
+  it("constructs correct file_item with fileName and len as string", async () => {
+    await sendFileMessageWeixin({
+      to: "user-1",
+      text: "",
+      fileName: "report.pdf",
+      uploaded: UPLOADED,
+      opts: BASE_OPTS,
+    });
+
+    const msg = vi.mocked(sendMessageApi).mock.calls[0][0].body.msg!;
+    const fileItem = msg.item_list![0];
+
+    expect(fileItem.type).toBe(MessageItemType.FILE);
+    expect(fileItem.file_item!.media!.encrypt_query_param).toBe("enc_query_param_abc");
+    expect(fileItem.file_item!.media!.aes_key).toBe(
+      Buffer.from(UPLOADED.aeskey).toString("base64"),
+    );
+    expect(fileItem.file_item!.media!.encrypt_type).toBe(1);
+    expect(fileItem.file_item!.file_name).toBe("report.pdf");
+    expect(fileItem.file_item!.len).toBe("1024");
+  });
+});
+}); // end describe("send functions")

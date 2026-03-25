@@ -82,14 +82,18 @@ import {
   resolveWeixinAccount,
   setStateDir,
   removeWeixinAccount,
+  saveWeixinAccount,
+  registerWeixinAccountId,
 } from "./auth/accounts.js";
 import { setSyncStateDir } from "./storage/sync-buf.js";
-import { getContextToken } from "./messaging/inbound.js";
+import { setChannelVersion, sendTyping } from "./api/api.js";
+import { resetSession, isSessionPaused, pauseSession } from "./api/session-guard.js";
+import { setContextToken, getContextToken } from "./messaging/inbound.js";
 import { sendMessageWeixin, markdownToPlainText } from "./messaging/send.js";
 import { sendWeixinMediaFile } from "./messaging/send-media.js";
 import { cleanupTempMedia } from "./media/media-download.js";
 import { startPollLoop } from "./poll/poll-loop.js";
-import { startWeixinLoginWithQr } from "./auth/login-qr.js";
+import { startWeixinLoginWithQr, waitForWeixinLogin } from "./auth/login-qr.js";
 import { WeixinBotClient } from "./client.js";
 
 beforeEach(() => {
@@ -407,5 +411,361 @@ describe("cleanupTempMedia", () => {
     const client = new WeixinBotClient({ tempDir: "/my/temp" });
     await client.cleanupTempMedia();
     expect(cleanupTempMedia).toHaveBeenCalledWith("/my/temp");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shared helper for tests below
+// ---------------------------------------------------------------------------
+
+async function startedClient() {
+  vi.mocked(listIndexedWeixinAccountIds).mockReturnValue(["acc-1"]);
+  vi.mocked(resolveWeixinAccount).mockReturnValue({
+    accountId: "acc-1",
+    baseUrl: "https://ilinkai.weixin.qq.com",
+    cdnBaseUrl: "https://cdn.example.com",
+    token: "tok",
+    configured: true,
+    userId: "uid",
+  });
+  const client = new WeixinBotClient();
+  await client.start();
+  return client;
+}
+
+// ---------------------------------------------------------------------------
+// constructor — channelVersion
+// ---------------------------------------------------------------------------
+
+describe("constructor channelVersion", () => {
+  it("calls setChannelVersion when channelVersion is provided", () => {
+    new WeixinBotClient({ channelVersion: "custom-v1.2.3" });
+    expect(setChannelVersion).toHaveBeenCalledWith("custom-v1.2.3");
+  });
+
+  it("does not call setChannelVersion when channelVersion is omitted", () => {
+    new WeixinBotClient();
+    expect(setChannelVersion).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// poll-loop callbacks
+// ---------------------------------------------------------------------------
+
+describe("poll-loop callbacks", () => {
+  function getPollCallbacks() {
+    const pollOpts = vi.mocked(startPollLoop).mock.calls[0][0];
+    return pollOpts.callbacks;
+  }
+
+  it("onMessage sets contextToken, updates lastInboundAt, emits message", async () => {
+    const client = await startedClient();
+    const msgListener = vi.fn();
+    client.on("message", msgListener);
+
+    const callbacks = getPollCallbacks();
+    const msg = {
+      chatId: "user-123",
+      text: "hello",
+      raw: { context_token: "ctx-789" },
+    };
+    await callbacks.onMessage(msg as any);
+
+    expect(setContextToken).toHaveBeenCalledWith("user-123", "ctx-789");
+    expect(msgListener).toHaveBeenCalledWith(msg);
+    expect(client.getStatus().lastInboundAt).toBeDefined();
+  });
+
+  it("onSessionExpired pauses session, emits event, stops polling", async () => {
+    const client = await startedClient();
+    const expiredListener = vi.fn();
+    client.on("sessionExpired", expiredListener);
+
+    const callbacks = getPollCallbacks();
+    await callbacks.onSessionExpired("acc-1");
+
+    expect(pauseSession).toHaveBeenCalledWith("acc-1");
+    expect(expiredListener).toHaveBeenCalledWith("acc-1");
+    expect(client.getStatus().pollLoopRunning).toBe(false);
+  });
+
+  it("onStatusChange updates pollLoopRunning and derived connected", async () => {
+    const client = await startedClient();
+    const callbacks = getPollCallbacks();
+
+    callbacks.onStatusChange(true);
+    expect(client.getStatus().pollLoopRunning).toBe(true);
+    expect(client.getStatus().connected).toBe(true);
+
+    callbacks.onStatusChange(false);
+    expect(client.getStatus().pollLoopRunning).toBe(false);
+    expect(client.getStatus().connected).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// poll-loop error handling
+// ---------------------------------------------------------------------------
+
+describe("poll-loop error handling", () => {
+  it("emits error event when startPollLoop rejects", async () => {
+    vi.mocked(startPollLoop).mockRejectedValueOnce(new Error("poll crash"));
+
+    // Register listener BEFORE start() so it catches the error
+    vi.mocked(listIndexedWeixinAccountIds).mockReturnValue(["acc-1"]);
+    vi.mocked(resolveWeixinAccount).mockReturnValue({
+      accountId: "acc-1",
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      cdnBaseUrl: "https://cdn.example.com",
+      token: "tok",
+      configured: true,
+      userId: "uid",
+    });
+    const client = new WeixinBotClient();
+    const errorListener = vi.fn();
+    client.on("error", errorListener);
+
+    await client.start();
+    // Wait for the .catch() microtask to execute
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(errorListener).toHaveBeenCalledWith(expect.any(Error));
+    expect(errorListener.mock.calls[0][0].message).toBe("poll crash");
+    expect(client.getStatus().pollLoopRunning).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// login success flow
+// ---------------------------------------------------------------------------
+
+describe("login success flow", () => {
+  it("saves account and starts polling on successful login", async () => {
+    vi.mocked(waitForWeixinLogin).mockResolvedValueOnce({
+      connected: true,
+      accountId: "user@wechat.com",
+      botToken: "new-token",
+      baseUrl: "https://api.weixin.qq.com",
+      userId: "userid-123",
+    } as any);
+
+    const client = new WeixinBotClient();
+    const loginSuccessListener = vi.fn();
+    client.on("loginSuccess", loginSuccessListener);
+
+    await client.login();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(saveWeixinAccount).toHaveBeenCalledWith(
+      "user-wechat-com",
+      expect.objectContaining({
+        token: "new-token",
+        baseUrl: "https://api.weixin.qq.com",
+        userId: "userid-123",
+      }),
+    );
+    expect(registerWeixinAccountId).toHaveBeenCalledWith("user-wechat-com");
+    expect(resetSession).toHaveBeenCalledWith("user-wechat-com");
+    expect(loginSuccessListener).toHaveBeenCalledWith("user-wechat-com");
+  });
+
+  it("returns qrAscii as string when qrcode-terminal is available", async () => {
+    const client = new WeixinBotClient();
+    const result = await client.login();
+
+    expect(result.qrcodeUrl).toBe("https://login.weixin.qq.com/qr/test");
+    // qrcode-terminal is installed, so qrAscii should be a rendered string
+    expect(typeof result.qrAscii).toBe("string");
+    expect(result.qrAscii!.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// login error handling
+// ---------------------------------------------------------------------------
+
+describe("login error handling", () => {
+  it("emits error event when waitForWeixinLogin rejects", async () => {
+    vi.mocked(waitForWeixinLogin).mockRejectedValueOnce(
+      new Error("QR fetch failed"),
+    );
+
+    const client = new WeixinBotClient();
+    const errorListener = vi.fn();
+    client.on("error", errorListener);
+
+    await client.login();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(errorListener).toHaveBeenCalledWith(expect.any(Error));
+    expect(saveWeixinAccount).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// onQrRefresh callback
+// ---------------------------------------------------------------------------
+
+describe("onQrRefresh callback", () => {
+  it("emits qrRefresh event when QR code is refreshed", async () => {
+    vi.mocked(waitForWeixinLogin).mockImplementationOnce(
+      async ({ onQrRefresh }: any) => {
+        if (onQrRefresh) await onQrRefresh("https://new-qr-url");
+        return { connected: false, message: "" };
+      },
+    );
+
+    const client = new WeixinBotClient();
+    const refreshListener = vi.fn();
+    client.on("qrRefresh", refreshListener);
+
+    await client.login();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(refreshListener).toHaveBeenCalledWith(
+      expect.objectContaining({ qrcodeUrl: "https://new-qr-url" }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sendMedia — additional coverage
+// ---------------------------------------------------------------------------
+
+describe("sendMedia additional", () => {
+  it("throws when no contextToken", async () => {
+    const client = await startedClient();
+    vi.mocked(getContextToken).mockReturnValue(undefined);
+
+    await expect(
+      client.sendMedia("chat1", "/path/file.jpg"),
+    ).rejects.toThrow("no contextToken");
+  });
+
+  it("passes empty string when no caption", async () => {
+    const client = await startedClient();
+    vi.mocked(getContextToken).mockReturnValue("ctx-tok");
+
+    await client.sendMedia("chat1", "/path/file.jpg");
+
+    expect(markdownToPlainText).not.toHaveBeenCalled();
+    expect(sendWeixinMediaFile).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "" }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// startTyping / stopTyping
+// ---------------------------------------------------------------------------
+
+describe("startTyping / stopTyping", () => {
+  it("sends typing indicator when typingTicket is available", async () => {
+    const client = await startedClient();
+    vi.mocked(getContextToken).mockReturnValue("ctx-tok");
+
+    // Override configManager mock to return a typingTicket
+    (client as any).configManager.getForUser.mockResolvedValue({
+      typingTicket: "ticket-abc",
+    });
+
+    client.startTyping("chat1");
+    // Flush async promise chain
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(sendTyping).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          ilink_user_id: "chat1",
+          typing_ticket: "ticket-abc",
+          status: 1, // TypingStatus.TYPING
+        }),
+      }),
+    );
+  });
+
+  it("does not send typing when typingTicket is empty", async () => {
+    const client = await startedClient();
+    vi.mocked(getContextToken).mockReturnValue("ctx-tok");
+
+    // Default mock returns empty typingTicket
+    (client as any).configManager.getForUser.mockResolvedValue({
+      typingTicket: "",
+    });
+
+    client.startTyping("chat1");
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(sendTyping).not.toHaveBeenCalled();
+  });
+
+  it("does not send typing when not started", () => {
+    const client = new WeixinBotClient();
+    client.startTyping("chat1");
+    // No error, just early return
+    expect(sendTyping).not.toHaveBeenCalled();
+  });
+
+  it("stopTyping clears timer and sends cancel status", async () => {
+    const client = await startedClient();
+    vi.mocked(getContextToken).mockReturnValue("ctx-tok");
+
+    (client as any).configManager.getForUser.mockResolvedValue({
+      typingTicket: "ticket-abc",
+    });
+
+    client.startTyping("chat1");
+    await new Promise((r) => setTimeout(r, 0));
+
+    vi.mocked(sendTyping).mockClear();
+
+    client.stopTyping("chat1");
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(sendTyping).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          status: 2, // TypingStatus.CANCEL
+        }),
+      }),
+    );
+  });
+
+  it("stopTyping does nothing when no active typing", async () => {
+    const client = await startedClient();
+    client.stopTyping("chat-no-typing");
+    expect(sendTyping).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getStatus — sessionPaused
+// ---------------------------------------------------------------------------
+
+describe("getStatus sessionPaused", () => {
+  it("returns sessionPaused=true when session is paused", async () => {
+    const client = await startedClient();
+    vi.mocked(isSessionPaused).mockReturnValue(true);
+
+    expect(client.getStatus().sessionPaused).toBe(true);
+  });
+
+  it("returns sessionPaused=false before start", () => {
+    const client = new WeixinBotClient();
+    expect(client.getStatus().sessionPaused).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// logout — no accounts
+// ---------------------------------------------------------------------------
+
+describe("logout no accounts", () => {
+  it("does not call removeWeixinAccount when no accounts registered", async () => {
+    vi.mocked(listIndexedWeixinAccountIds).mockReturnValue([]);
+    const client = new WeixinBotClient();
+    await client.logout();
+    expect(removeWeixinAccount).not.toHaveBeenCalled();
   });
 });
