@@ -4,8 +4,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Mock modules
 // ---------------------------------------------------------------------------
 
-vi.mock("./auth/accounts.js", () => ({
+vi.mock("./storage/state-dir.js", () => ({
   setStateDir: vi.fn(),
+}));
+
+vi.mock("./auth/accounts.js", () => ({
   listIndexedWeixinAccountIds: vi.fn().mockReturnValue([]),
   resolveWeixinAccount: vi.fn().mockReturnValue({
     accountId: "acc-1",
@@ -22,9 +25,7 @@ vi.mock("./auth/accounts.js", () => ({
   DEFAULT_BASE_URL: "https://ilinkai.weixin.qq.com",
 }));
 
-vi.mock("./storage/sync-buf.js", () => ({
-  setSyncStateDir: vi.fn(),
-}));
+vi.mock("./storage/sync-buf.js", () => ({}));
 
 vi.mock("./api/api.js", () => ({
   setChannelVersion: vi.fn(),
@@ -46,7 +47,6 @@ vi.mock("./api/session-guard.js", () => ({
 }));
 
 vi.mock("./messaging/inbound.js", () => ({
-  setContextTokenStateDir: vi.fn(),
   restoreContextTokens: vi.fn(),
   clearContextTokensForAccount: vi.fn(),
   setContextToken: vi.fn(),
@@ -83,15 +83,14 @@ vi.mock("./auth/login-qr.js", () => ({
 import {
   listIndexedWeixinAccountIds,
   resolveWeixinAccount,
-  setStateDir,
   removeWeixinAccount,
   saveWeixinAccount,
   registerWeixinAccountId,
 } from "./auth/accounts.js";
-import { setSyncStateDir } from "./storage/sync-buf.js";
+import { setStateDir } from "./storage/state-dir.js";
 import { setChannelVersion, sendTyping } from "./api/api.js";
 import { resetSession, isSessionPaused, pauseSession } from "./api/session-guard.js";
-import { setContextTokenStateDir, restoreContextTokens, clearContextTokensForAccount, getContextToken } from "./messaging/inbound.js";
+import { restoreContextTokens, clearContextTokensForAccount, getContextToken } from "./messaging/inbound.js";
 import { sendMessageWeixin, markdownToPlainText } from "./messaging/send.js";
 import { sendWeixinMediaFile } from "./messaging/send-media.js";
 import { cleanupTempMedia } from "./media/media-download.js";
@@ -116,7 +115,6 @@ describe("constructor", () => {
     expect(client.config.clientIdPrefix).toBe("weixin-bot");
     expect(client.config.stateDir).toContain(".weixin-bot");
     expect(setStateDir).toHaveBeenCalled();
-    expect(setSyncStateDir).toHaveBeenCalled();
   });
 
   it("applies custom config", () => {
@@ -129,7 +127,6 @@ describe("constructor", () => {
     expect(client.config.tempDir).toBe("/custom/temp");
     expect(client.config.clientIdPrefix).toBe("my-bot");
     expect(setStateDir).toHaveBeenCalledWith("/custom/state");
-    expect(setSyncStateDir).toHaveBeenCalledWith("/custom/state");
   });
 });
 
@@ -199,7 +196,6 @@ describe("start", () => {
     });
 
     const client = new WeixinBotClient();
-    expect(setContextTokenStateDir).toHaveBeenCalled();
     const result = await client.start();
     expect(result).toBe(true);
     expect(restoreContextTokens).toHaveBeenCalledWith("acc-1");

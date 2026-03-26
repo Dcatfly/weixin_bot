@@ -4,7 +4,6 @@ import path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
 import {
-  setStateDir,
   normalizeAccountId,
   saveWeixinAccount,
   loadWeixinAccount,
@@ -14,7 +13,7 @@ import {
   resolveWeixinAccount,
   DEFAULT_BASE_URL,
 } from "./accounts.js";
-import { setSyncStateDir } from "../storage/sync-buf.js";
+import { setStateDir } from "../storage/state-dir.js";
 
 describe("accounts", () => {
   let tmpDir: string;
@@ -22,7 +21,6 @@ describe("accounts", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "weixin-test-"));
     setStateDir(tmpDir);
-    setSyncStateDir(tmpDir);
   });
 
   afterEach(() => {

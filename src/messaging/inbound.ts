@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 
+import { getStateDir } from "../storage/state-dir.js";
 import { logger } from "../util/logger.js";
 import type { MessageItem } from "../api/types.js";
 import { MessageItemType } from "../api/types.js";
@@ -10,13 +10,7 @@ import { MessageItemType } from "../api/types.js";
 // Context token store (in-process cache + disk persistence)
 // ---------------------------------------------------------------------------
 
-let _stateDir = path.join(os.homedir(), ".weixin-bot");
 let _persistAccountId: string | undefined;
-
-/** Set the base state directory for context token persistence. */
-export function setContextTokenStateDir(dir: string): void {
-  _stateDir = dir;
-}
 
 /**
  * contextToken is issued per-message by the Weixin getupdates API and must
@@ -26,7 +20,7 @@ export function setContextTokenStateDir(dir: string): void {
 const contextTokenStore = new Map<string, string>();
 
 function resolveContextTokenFilePath(accountId: string): string {
-  return path.join(_stateDir, "accounts", `${accountId}.context-tokens.json`);
+  return path.join(getStateDir(), "accounts", `${accountId}.context-tokens.json`);
 }
 
 function persistContextTokens(): void {

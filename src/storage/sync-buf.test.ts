@@ -3,8 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
+import { setStateDir } from "./state-dir.js";
 import {
-  setSyncStateDir,
   getSyncBufFilePath,
   loadGetUpdatesBuf,
   saveGetUpdatesBuf,
@@ -15,7 +15,7 @@ describe("sync-buf", () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "weixin-test-"));
-    setSyncStateDir(tmpDir);
+    setStateDir(tmpDir);
   });
 
   afterEach(() => {

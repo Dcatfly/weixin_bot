@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  setStateDir,
   listIndexedWeixinAccountIds,
   resolveWeixinAccount,
   saveWeixinAccount,
@@ -18,13 +17,12 @@ import {
   waitForWeixinLogin,
   DEFAULT_ILINK_BOT_TYPE,
 } from "./auth/login-qr.js";
-import { setSyncStateDir } from "./storage/sync-buf.js";
+import { setStateDir } from "./storage/state-dir.js";
 import { setChannelVersion, sendTyping } from "./api/api.js";
 import { WeixinConfigManager } from "./api/config-cache.js";
 import { resetSession, isSessionPaused, pauseSession } from "./api/session-guard.js";
 import { TypingStatus } from "./api/types.js";
 import {
-  setContextTokenStateDir,
   restoreContextTokens,
   clearContextTokensForAccount,
   getContextToken,
@@ -132,8 +130,6 @@ export class WeixinBotClient extends EventEmitter {
     };
 
     setStateDir(stateDir);
-    setSyncStateDir(stateDir);
-    setContextTokenStateDir(stateDir);
 
     if (config?.channelVersion) {
       setChannelVersion(config.channelVersion);

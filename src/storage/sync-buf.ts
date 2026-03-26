@@ -1,13 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
 
-let _stateDir = path.join(os.homedir(), ".weixin-bot");
-
-export function setSyncStateDir(dir: string): void { _stateDir = dir; }
+import { getStateDir } from "./state-dir.js";
 
 function resolveSyncDir(): string {
-  return path.join(_stateDir, "sync");
+  return path.join(getStateDir(), "sync");
 }
 
 export function getSyncBufFilePath(accountId: string): string {

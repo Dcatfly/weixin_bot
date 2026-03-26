@@ -18,7 +18,6 @@ vi.mock("../storage/sync-buf.js", () => ({
   getSyncBufFilePath: vi.fn().mockReturnValue("/tmp/sync/test.sync.json"),
   loadGetUpdatesBuf: vi.fn().mockReturnValue(undefined),
   saveGetUpdatesBuf: vi.fn(),
-  setSyncStateDir: vi.fn(),
 }));
 
 // Keep real implementations for bodyFromItemList and isMediaItem, only spy setContextToken

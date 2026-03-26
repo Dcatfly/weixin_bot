@@ -1,22 +1,12 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
+import { getStateDir } from "../storage/state-dir.js";
 import { getSyncBufFilePath } from "../storage/sync-buf.js";
 
 
 export const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
 export const CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
-
-// ---------------------------------------------------------------------------
-// State directory — configurable via setter
-// ---------------------------------------------------------------------------
-
-let _stateDir = path.join(os.homedir(), ".weixin-bot");
-
-export function setStateDir(dir: string): void { _stateDir = dir; }
-
-function resolveWeixinStateDir(): string { return _stateDir; }
 
 // ---------------------------------------------------------------------------
 // Account ID normalization
@@ -31,7 +21,7 @@ export function normalizeAccountId(raw: string): string {
 // ---------------------------------------------------------------------------
 
 function resolveAccountIndexPath(): string {
-  return path.join(resolveWeixinStateDir(), "accounts.json");
+  return path.join(getStateDir(), "accounts.json");
 }
 
 /** Returns all accountIds registered via QR login. */
@@ -50,7 +40,7 @@ export function listIndexedWeixinAccountIds(): string[] {
 
 /** Add accountId to the persistent index (no-op if already present). */
 export function registerWeixinAccountId(accountId: string): void {
-  const dir = resolveWeixinStateDir();
+  const dir = getStateDir();
   fs.mkdirSync(dir, { recursive: true });
 
   const existing = listIndexedWeixinAccountIds();
@@ -75,7 +65,7 @@ export type WeixinAccountData = {
 };
 
 function resolveAccountsDir(): string {
-  return path.join(resolveWeixinStateDir(), "accounts");
+  return path.join(getStateDir(), "accounts");
 }
 
 function resolveAccountPath(accountId: string): string {
@@ -148,7 +138,7 @@ export function removeWeixinAccount(accountId: string): void {
   // 从索引中移除
   const existing = listIndexedWeixinAccountIds();
   const updated = existing.filter((id) => id !== accountId);
-  const dir = resolveWeixinStateDir();
+  const dir = getStateDir();
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(resolveAccountIndexPath(), JSON.stringify(updated, null, 2), "utf-8");
 }

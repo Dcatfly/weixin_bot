@@ -3,12 +3,12 @@ import os from "node:os";
 import path from "node:path";
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { setStateDir } from "../storage/state-dir.js";
 import {
   isMediaItem,
   bodyFromItemList,
   setContextToken,
   getContextToken,
-  setContextTokenStateDir,
   restoreContextTokens,
   clearContextTokensForAccount,
 } from "./inbound.js";
@@ -248,7 +248,7 @@ describe("contextToken persistence", () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "inbound-test-"));
-    setContextTokenStateDir(tmpDir);
+    setStateDir(tmpDir);
   });
 
   afterEach(() => {
