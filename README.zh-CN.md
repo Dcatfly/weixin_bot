@@ -162,15 +162,19 @@ src/
 ├── client.ts         # WeixinBotClient 门面类（EventEmitter）
 ├── poll/             # 长轮询循环（回调驱动）
 ├── api/              # iLink Bot API 通信层（HTTP）
+│   ├── config-cache.ts   # getConfig 缓存（TTL）
+│   └── session-guard.ts  # session 过期追踪（errcode -14）
 ├── auth/             # 账号存储 + 扫码登录
 ├── cdn/              # 微信 CDN 加解密上传下载
 ├── media/            # 媒体下载、MIME 判断、SILK 转码
 ├── messaging/        # 消息解析（入站）+ 发送（文本/媒体）
-├── storage/          # 同步断点持久化
+├── storage/          # 持久化存储
+│   ├── state-dir.ts      # 统一状态目录管理（module-level setter）
+│   └── sync-buf.ts       # getUpdates 同步断点
 └── util/             # 日志（stderr）、ID 生成、脱敏
 ```
 
-[`vendor/`](vendor/) 目录保存了 `@tencent-weixin/openclaw-weixin` v1.0.2 的原始源码供参考。泛化细节见 [CLAUDE.md](CLAUDE.md)。
+[`vendor/`](vendor/) 目录保存了 `@tencent-weixin/openclaw-weixin` 的原始源码（当前 v2.0.1）供参考。泛化细节见 [CLAUDE.md](CLAUDE.md)。
 
 ## 许可证
 

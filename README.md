@@ -162,15 +162,19 @@ src/
 ├── client.ts         # WeixinBotClient (EventEmitter facade)
 ├── poll/             # Long-polling loop (callback-driven)
 ├── api/              # iLink Bot API layer (HTTP)
+│   ├── config-cache.ts   # getConfig caching with TTL
+│   └── session-guard.ts  # Session expiry tracking (errcode -14)
 ├── auth/             # Account storage + QR login
 ├── cdn/              # WeChat CDN encrypt/decrypt/upload
 ├── media/            # Media download, MIME detection, SILK transcoding
 ├── messaging/        # Message parsing (inbound) + sending (text/media)
-├── storage/          # Sync checkpoint persistence
+├── storage/          # Persistent state management
+│   ├── state-dir.ts      # Unified state directory (module-level setter)
+│   └── sync-buf.ts       # getUpdates sync checkpoint
 └── util/             # Logger (stderr), ID generation, redaction
 ```
 
-The [`vendor/`](vendor/) directory contains the original `@tencent-weixin/openclaw-weixin` v1.0.2 source for reference. See [CLAUDE.md](CLAUDE.md) for details on the generalization.
+The [`vendor/`](vendor/) directory contains the original `@tencent-weixin/openclaw-weixin` source (currently v2.0.1) for reference. See [CLAUDE.md](CLAUDE.md) for details on the generalization.
 
 ## License
 

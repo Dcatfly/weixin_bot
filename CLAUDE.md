@@ -4,7 +4,7 @@
 
 ## 来源
 
-`vendor/` 目录保存了 `@tencent-weixin/openclaw-weixin` 插件 v1.0.2 的原始源码（含 tgz 包）。
+`vendor/` 目录保存了 `@tencent-weixin/openclaw-weixin` 插件的原始源码（含 tgz 包）。
 `src/` 基于 vendor 代码泛化而来，核心逻辑（API、CDN、认证、媒体、消息类型）几乎一致，
 主要差异在集成层：
 
@@ -35,11 +35,17 @@ src/
 ├── poll/
 │   └── poll-loop.ts  # getUpdates long-poll 循环（回调驱动）
 ├── api/              # iLink Bot API 通信层（HTTP POST/GET）
+│   ├── config-cache.ts   # getConfig 缓存（TTL）
+│   └── session-guard.ts  # session 过期追踪（errcode -14）
 ├── auth/             # 账号存储 + 扫码登录
 ├── cdn/              # 微信 CDN 加解密上传下载
+│   ├── cdn-upload.ts     # CDN 上传参数构建
+│   └── upload.ts         # 文件加密上传
 ├── media/            # 媒体下载解密、MIME 判断、SILK 语音转码
 ├── messaging/        # 消息解析（inbound）、发送（send/send-media）
-├── storage/          # getUpdates 同步断点持久化
+├── storage/          # 持久化存储
+│   ├── state-dir.ts      # 统一状态目录管理（module-level setter）
+│   └── sync-buf.ts       # getUpdates 同步断点
 └── util/             # 日志（stderr）、ID 生成、脱敏
 ```
 
@@ -56,10 +62,24 @@ src/
 ## 注意事项
 
 - 包管理器 pnpm，构建工具 tsup，target node22，ESM only
-- 模块级 setter（`setStateDir`/`setSyncStateDir`）意味着同一进程只能有一个 `WeixinBotClient` 实例
-- `contextToken` 由库内部自动管理（poll-loop 提取 → 内存缓存 → 发送时携带）
+- 模块级 setter（`setStateDir`）意味着同一进程只能有一个 `WeixinBotClient` 实例
+- `contextToken` 由库内部自动管理（poll-loop 提取 → 内存缓存 → 磁盘持久化 → 发送时携带），缺失时 warn 而非抛错
 - session 过期（errcode -14）触发 `sessionExpired` 事件，需调用方重新 login
 - `silk-wasm` 是可选依赖，SILK 转码失败时优雅降级为原始格式
+
+## 存储文件布局
+
+`stateDir` 默认 `~/.weixin-bot/`，内部结构：
+
+```
+<stateDir>/
+├── accounts.json                              # 已注册账户 ID 列表
+├── accounts/
+│   ├── <accountId>.json                       # 账户凭证（chmod 0o600）
+│   └── <accountId>.context-tokens.json        # 每个 chatId 的 contextToken 缓存
+└── sync/
+    └── <accountId>.sync.json                  # getUpdates 同步断点（buf）
+```
 
 ## 代码风格
 
@@ -70,16 +90,17 @@ src/
 - 测试中显式 `import { describe, it, expect } from "vitest"`，不使用全局注入
 - `tsconfig.build.json` 排除测试文件，`tsconfig.json` 保留（IDE 支持）
 
+## 测试
+
+- 依赖通过 `vi.mock("../path/to/module.js")` 在文件顶层 mock，mock 路径需带 `.js` 后缀
+- `beforeEach` 中调用 `vi.clearAllMocks()` 重置状态
+- 常用 fixture 命名：`acc-1`（accountId）、`tok-1`（token）、`user-1`（userId）、`chat-1`（chatId）
+- client.test.ts 通过 mock 整个 `poll-loop.ts` 模块来测试 client 生命周期，用 `mockStartPollLoop.mock.calls[0][0]` 取回调后手动触发
+
 ## 环境变量
 
 - `LOG_LEVEL` — debug/info/warn/error，默认 info
 
-## 事件（WeixinBotEvents）
+## 事件
 
-| 事件 | 载荷 | 触发时机 |
-|------|------|----------|
-| `message` | `InboundMessage` | 收到新消息 |
-| `loginSuccess` | `accountId: string` | QR 扫码登录成功 |
-| `qrRefresh` | `{ qrcodeUrl, qrAscii? }` | QR 码需要刷新 |
-| `sessionExpired` | `accountId: string` | 会话过期（errcode -14） |
-| `error` | `Error` | 一般错误 |
+5 个事件：`message`、`loginSuccess`、`qrRefresh`、`sessionExpired`、`error`，详见 README。
