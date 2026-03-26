@@ -1,9 +1,16 @@
-import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   isMediaItem,
   bodyFromItemList,
   setContextToken,
   getContextToken,
+  setContextTokenStateDir,
+  restoreContextTokens,
+  clearContextTokensForAccount,
 } from "./inbound.js";
 import { MessageItemType } from "../api/types.js";
 import type { MessageItem } from "../api/types.js";
@@ -233,5 +240,68 @@ describe("setContextToken / getContextToken", () => {
     setContextToken("chat-ct-3b", "token-b");
     expect(getContextToken("chat-ct-3a")).toBe("token-a");
     expect(getContextToken("chat-ct-3b")).toBe("token-b");
+  });
+});
+
+describe("contextToken persistence", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "inbound-test-"));
+    setContextTokenStateDir(tmpDir);
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("persists tokens to disk after setContextToken", () => {
+    restoreContextTokens("acct-persist");
+    setContextToken("chat-p1", "tok-p1");
+
+    const filePath = path.join(tmpDir, "accounts", "acct-persist.context-tokens.json");
+    expect(fs.existsSync(filePath)).toBe(true);
+    const data = JSON.parse(fs.readFileSync(filePath, "utf-8")) as Record<string, string>;
+    expect(data["chat-p1"]).toBe("tok-p1");
+  });
+
+  it("restoreContextTokens loads tokens into memory", () => {
+    const dir = path.join(tmpDir, "accounts");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "acct-restore.context-tokens.json"),
+      JSON.stringify({ "chat-r1": "tok-r1", "chat-r2": "tok-r2" }),
+    );
+
+    restoreContextTokens("acct-restore");
+    expect(getContextToken("chat-r1")).toBe("tok-r1");
+    expect(getContextToken("chat-r2")).toBe("tok-r2");
+  });
+
+  it("clearContextTokensForAccount clears memory and deletes file", () => {
+    restoreContextTokens("acct-clear");
+    setContextToken("chat-c1", "tok-c1");
+
+    const filePath = path.join(tmpDir, "accounts", "acct-clear.context-tokens.json");
+    expect(fs.existsSync(filePath)).toBe(true);
+
+    clearContextTokensForAccount("acct-clear");
+    expect(getContextToken("chat-c1")).toBeUndefined();
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
+
+  it("restoreContextTokens handles missing file gracefully", () => {
+    expect(() => restoreContextTokens("acct-nofile")).not.toThrow();
+  });
+
+  it("multiple setContextToken calls accumulate in one file", () => {
+    restoreContextTokens("acct-multi");
+    setContextToken("chat-m1", "tok-m1");
+    setContextToken("chat-m2", "tok-m2");
+
+    const filePath = path.join(tmpDir, "accounts", "acct-multi.context-tokens.json");
+    const data = JSON.parse(fs.readFileSync(filePath, "utf-8")) as Record<string, string>;
+    expect(data["chat-m1"]).toBe("tok-m1");
+    expect(data["chat-m2"]).toBe("tok-m2");
   });
 });

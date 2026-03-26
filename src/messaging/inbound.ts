@@ -1,23 +1,91 @@
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+
 import { logger } from "../util/logger.js";
 import type { MessageItem } from "../api/types.js";
 import { MessageItemType } from "../api/types.js";
 
 // ---------------------------------------------------------------------------
-// Context token store (in-process cache: chatId → contextToken)
+// Context token store (in-process cache + disk persistence)
 // ---------------------------------------------------------------------------
+
+let _stateDir = path.join(os.homedir(), ".weixin-bot");
+let _persistAccountId: string | undefined;
+
+/** Set the base state directory for context token persistence. */
+export function setContextTokenStateDir(dir: string): void {
+  _stateDir = dir;
+}
 
 /**
  * contextToken is issued per-message by the Weixin getupdates API and must
- * be echoed verbatim in every outbound send. It is not persisted: the monitor
- * loop populates this map on each inbound message, and the outbound adapter
- * reads it back when the agent sends a reply.
+ * be echoed verbatim in every outbound send. The in-memory map is the primary
+ * lookup; a disk-backed file per account ensures tokens survive restarts.
  */
 const contextTokenStore = new Map<string, string>();
 
-/** Store a context token for a given chat (user). */
+function resolveContextTokenFilePath(accountId: string): string {
+  return path.join(_stateDir, "accounts", `${accountId}.context-tokens.json`);
+}
+
+function persistContextTokens(): void {
+  if (!_persistAccountId) return;
+  const filePath = resolveContextTokenFilePath(_persistAccountId);
+  try {
+    const dir = path.dirname(filePath);
+    fs.mkdirSync(dir, { recursive: true });
+    const tokens: Record<string, string> = {};
+    for (const [k, v] of contextTokenStore) {
+      tokens[k] = v;
+    }
+    fs.writeFileSync(filePath, JSON.stringify(tokens, null, 0), "utf-8");
+  } catch (err) {
+    logger.warn(`persistContextTokens: failed to write ${filePath}: ${String(err)}`);
+  }
+}
+
+/**
+ * Restore persisted context tokens for an account into the in-memory map.
+ * Called once during start() to survive restarts.
+ */
+export function restoreContextTokens(accountId: string): void {
+  _persistAccountId = accountId;
+  const filePath = resolveContextTokenFilePath(accountId);
+  try {
+    if (!fs.existsSync(filePath)) return;
+    const raw = fs.readFileSync(filePath, "utf-8");
+    const tokens = JSON.parse(raw) as Record<string, string>;
+    let count = 0;
+    for (const [chatId, token] of Object.entries(tokens)) {
+      if (typeof token === "string" && token) {
+        contextTokenStore.set(chatId, token);
+        count++;
+      }
+    }
+    logger.info(`restoreContextTokens: restored ${count} tokens for account=${accountId}`);
+  } catch (err) {
+    logger.warn(`restoreContextTokens: failed to read ${filePath}: ${String(err)}`);
+  }
+}
+
+/** Remove all context tokens for a given account (memory + disk). */
+export function clearContextTokensForAccount(accountId: string): void {
+  contextTokenStore.clear();
+  const filePath = resolveContextTokenFilePath(accountId);
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch (err) {
+    logger.warn(`clearContextTokensForAccount: failed to remove ${filePath}: ${String(err)}`);
+  }
+  logger.info(`clearContextTokensForAccount: cleared tokens for account=${accountId}`);
+}
+
+/** Store a context token for a given chat (user), persisting to disk. */
 export function setContextToken(chatId: string, token: string): void {
   logger.debug(`setContextToken: key=${chatId}`);
   contextTokenStore.set(chatId, token);
+  persistContextTokens();
 }
 
 /** Retrieve the cached context token for a given chat (user). */
