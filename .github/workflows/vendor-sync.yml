@@ -1,0 +1,236 @@
+name: Vendor Sync
+
+on:
+  schedule:
+    # 每天 UTC 08:00（北京时间 16:00）检查一次
+    - cron: "0 8 * * *"
+  workflow_dispatch: # 支持手动触发
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: vendor-sync
+  cancel-in-progress: true
+
+jobs:
+  check-and-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Get local vendor version
+        id: local
+        run: |
+          LOCAL_VERSION=$(node -p "require('./vendor/package/package.json').version")
+          echo "version=$LOCAL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Local vendor version: $LOCAL_VERSION"
+
+      - name: Get latest npm version
+        id: remote
+        run: |
+          REMOTE_VERSION=$(npm view @tencent-weixin/openclaw-weixin version 2>/dev/null || echo "")
+          if [ -z "$REMOTE_VERSION" ]; then
+            echo "::error::Failed to fetch remote version from npm"
+            exit 1
+          fi
+          echo "version=$REMOTE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Remote npm version: $REMOTE_VERSION"
+
+      - name: Compare versions
+        id: compare
+        env:
+          LOCAL: ${{ steps.local.outputs.version }}
+          REMOTE: ${{ steps.remote.outputs.version }}
+        run: |
+          echo "Local: $LOCAL → Remote: $REMOTE"
+
+          # 仅支持 x.y.z 三段数字版本号，不支持 prerelease
+          NEEDS_UPDATE=$(node -e "
+            const lp = process.env.LOCAL.split('.').map(Number);
+            const rp = process.env.REMOTE.split('.').map(Number);
+            for (let i = 0; i < 3; i++) {
+              if (rp[i] > lp[i]) { console.log('true'); process.exit(); }
+              if (rp[i] < lp[i]) { console.log('false'); process.exit(); }
+            }
+            console.log('false');
+          ")
+          echo "needs_update=$NEEDS_UPDATE" >> "$GITHUB_OUTPUT"
+
+          if [ "$NEEDS_UPDATE" = "true" ]; then
+            echo "New version available: $REMOTE"
+          else
+            echo "Already up to date"
+          fi
+
+      - name: Check for existing PR
+        if: steps.compare.outputs.needs_update == 'true'
+        id: existing_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REMOTE_VERSION: ${{ steps.remote.outputs.version }}
+        run: |
+          EXISTING=$(gh pr list --head "vendor/openclaw-weixin-v${REMOTE_VERSION}" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+          if [ -n "$EXISTING" ]; then
+            echo "::notice::PR #${EXISTING} already exists for version ${REMOTE_VERSION}, skipping"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download and extract new version
+        if: steps.compare.outputs.needs_update == 'true' && steps.existing_pr.outputs.exists == 'false'
+        env:
+          REMOTE_VERSION: ${{ steps.remote.outputs.version }}
+        run: |
+          # 备份旧 package 目录用于生成 diff
+          cp -r vendor/package vendor/package-old
+
+          # 下载新版本 tgz（npm pack 输出文件名到 stdout，某些版本可能含路径前缀）
+          TGZ_PATH=$(npm pack "@tencent-weixin/openclaw-weixin@${REMOTE_VERSION}" --pack-destination /tmp/)
+          TGZ_FILE=$(basename "$TGZ_PATH")
+
+          # 清理旧文件
+          rm -f vendor/tencent-weixin-openclaw-weixin-*.tgz
+          rm -rf vendor/package
+
+          # 移入新 tgz 并解压（npm tgz 内含 package/ 目录）
+          mv "/tmp/${TGZ_FILE}" vendor/
+          tar -xzf "vendor/${TGZ_FILE}" -C vendor/
+
+          echo "Extracted version ${REMOTE_VERSION} to vendor/package/"
+
+      - name: Generate diff
+        if: steps.compare.outputs.needs_update == 'true' && steps.existing_pr.outputs.exists == 'false'
+        id: diff
+        run: |
+          # 生成 unified diff
+          diff -ruN vendor/package-old vendor/package > vendor/.vendor-diff.txt || true
+
+          if [ -s vendor/.vendor-diff.txt ]; then
+            LINES=$(wc -l < vendor/.vendor-diff.txt)
+            echo "has_diff=true" >> "$GITHUB_OUTPUT"
+            echo "Diff generated: ${LINES} lines"
+            # 截断过大的 diff（保留前 100KB）
+            head -c 100000 vendor/.vendor-diff.txt > vendor/.vendor-diff-truncated.txt
+            mv vendor/.vendor-diff-truncated.txt vendor/.vendor-diff.txt
+          else
+            echo "has_diff=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No differences found between versions"
+          fi
+
+      - name: Generate changelog with Claude
+        # continue-on-error: Claude 失败时降级为占位内容（由 Verify 步骤处理），不阻塞 PR 创建
+        if: steps.existing_pr.outputs.exists == 'false' && steps.diff.outputs.has_diff == 'true'
+        id: claude
+        continue-on-error: true
+        timeout-minutes: 15
+        uses: anthropics/claude-code-action@v1
+        with:
+          prompt: |
+            You are updating the vendor changelog for the npm package @tencent-weixin/openclaw-weixin.
+
+            The file `vendor/.vendor-diff.txt` contains a unified diff between version ${{ steps.local.outputs.version }} (old) and version ${{ steps.remote.outputs.version }} (new).
+
+            Please do the following:
+
+            1. Read the diff file at `vendor/.vendor-diff.txt`
+            2. Analyze the changes between the two versions
+
+            3. Update `vendor/CHANGELOG.md` (English changelog):
+               - Use `## ${{ steps.remote.outputs.version }}` as the version heading
+               - Categorize changes under: ### Added, ### Changed, ### Fixed, ### Removed
+               - Only include categories that have actual changes
+               - Be concise but informative
+
+            4. Update `vendor/CHANGELOG.zh_CN.md` (Chinese changelog):
+               - Use `## ${{ steps.remote.outputs.version }}` as the version heading
+               - Categorize changes under: ### 新增, ### 变更, ### 修复, ### 移除
+               - Only include categories that have actual changes
+               - Be concise but informative
+
+            For both files:
+            - If the file already has content, prepend the new version entry above existing content (newest version first)
+            - If the file is empty, just write the new entry
+            - Focus on meaningful functional changes, not trivial formatting differences
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+      - name: Verify changelog generation
+        if: steps.existing_pr.outputs.exists == 'false' && steps.diff.outputs.has_diff == 'true'
+        env:
+          REMOTE_VERSION: ${{ steps.remote.outputs.version }}
+        run: |
+          # 检查 changelog 中是否包含新版本号，缺失则 prepend 占位内容（保留已有历史）
+          if ! grep -q "## ${REMOTE_VERSION}" vendor/CHANGELOG.md 2>/dev/null; then
+            echo "::warning::English changelog missing version ${REMOTE_VERSION}, creating placeholder"
+            EXISTING_EN=$(cat vendor/CHANGELOG.md 2>/dev/null || true)
+            printf '## %s\n\n> Changelog pending — please review the diff manually.\n' "$REMOTE_VERSION" > vendor/CHANGELOG.md
+            if [ -n "$EXISTING_EN" ]; then
+              printf '\n%s\n' "$EXISTING_EN" >> vendor/CHANGELOG.md
+            fi
+          fi
+
+          if ! grep -q "## ${REMOTE_VERSION}" vendor/CHANGELOG.zh_CN.md 2>/dev/null; then
+            echo "::warning::Chinese changelog missing version ${REMOTE_VERSION}, creating placeholder"
+            EXISTING_ZH=$(cat vendor/CHANGELOG.zh_CN.md 2>/dev/null || true)
+            printf '## %s\n\n> 变更日志待补充，请手动审查 diff。\n' "$REMOTE_VERSION" > vendor/CHANGELOG.zh_CN.md
+            if [ -n "$EXISTING_ZH" ]; then
+              printf '\n%s\n' "$EXISTING_ZH" >> vendor/CHANGELOG.zh_CN.md
+            fi
+          fi
+
+      - name: Cleanup
+        if: steps.existing_pr.outputs.exists == 'false' && steps.compare.outputs.needs_update == 'true'
+        run: |
+          rm -rf vendor/package-old
+          rm -f vendor/.vendor-diff.txt
+
+      - name: Create Pull Request
+        if: steps.existing_pr.outputs.exists == 'false' && steps.diff.outputs.has_diff == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REMOTE_VERSION: ${{ steps.remote.outputs.version }}
+          LOCAL_VERSION: ${{ steps.local.outputs.version }}
+        run: |
+          BRANCH="vendor/openclaw-weixin-v${REMOTE_VERSION}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$BRANCH"
+          # -A 同时 stage 新增、修改和删除（旧 tgz 的删除）
+          # cleanup 步骤已在前执行，不会包含临时文件
+          git add -A vendor/
+          git commit -m "chore(vendor): bump @tencent-weixin/openclaw-weixin ${LOCAL_VERSION} → ${REMOTE_VERSION}"
+
+          git push origin "$BRANCH"
+
+          BODY="## Summary
+
+          自动同步 \`@tencent-weixin/openclaw-weixin\` npm 包新版本。
+
+          - **当前版本**: ${LOCAL_VERSION}
+          - **新版本**: ${REMOTE_VERSION}
+          - **npm**: https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin
+
+          ## Changelog
+
+          详见 \`vendor/CHANGELOG.md\` 和 \`vendor/CHANGELOG.zh_CN.md\`。
+
+          ## Checklist
+
+          - [ ] Review vendor/package/ diff
+          - [ ] Check changelog accuracy
+          - [ ] Verify no breaking changes affect src/"
+
+          gh pr create \
+            --title "chore(vendor): bump openclaw-weixin ${LOCAL_VERSION} → ${REMOTE_VERSION}" \
+            --body "$BODY"
