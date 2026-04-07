@@ -1,3 +1,36 @@
+## 2.1.7
+
+### Added
+
+- **`StreamingMarkdownFilter`** (`src/messaging/markdown-filter.ts`): streaming character-level filter replaces whole-string `markdownToPlainText`; outbound Markdown goes from effectively unsupported to **partially supported**.
+- **`apiGetFetch()`**: dedicated GET wrapper for API requests (shared headers, optional timeout).
+- **`iLink-App-Id` / `iLink-App-ClientVersion` headers**: added to all API requests, read from `package.json`'s `ilink_appid` and `version` fields.
+- **`upload_full_url` / `full_url` fields**: server can return a pre-built CDN URL for uploads and downloads, eliminating client-side URL construction.
+- **`scaned_but_redirect` QR status**: new IDC-redirect state during login; polling base URL switches to `redirect_host` transparently.
+
+### Changed
+
+- **QR code fetch uses fixed base URL** (`https://ilinkai.weixin.qq.com`): no longer requires `baseUrl` to be configured before login.
+- **QR status polling**: network/gateway errors (e.g. Cloudflare 524) are treated as `wait` and retried instead of thrown.
+- **`get_bot_qrcode` timeout**: client-side timeout removed; only `get_qrcode_status` retains a per-poll timeout.
+- **Outbound Markdown filtering**: `process-message` deliver path and `sendWeixinOutbound` (tool-call path) both use `StreamingMarkdownFilter` instead of `markdownToPlainText`.
+- **Lazy imports in `channel.ts`**: `monitorWeixinProvider` lazy-imported inside `startAccount` to prevent plugin/provider registry re-entrance during registration.
+- **Lazy imports in `process-message.ts`**: command-auth functions lazy-imported to prevent `ensureContextWindowCacheLoaded` side-effect at module initialization.
+- **`triggerWeixinChannelReload`**: always bumps `channelConfigUpdatedAt` (ISO 8601) on login success; no longer writes empty `accounts: {}` placeholder.
+- **Multi-account context isolation** config key changed from `agents.mode per-channel-per-peer` to `session.dmScope per-account-channel-peer`.
+- **Media downloadability check**: `encrypt_query_param` OR `full_url` accepted for images, voice, files, and video.
+- **Compatibility error message**: updated to suggest `npx @tencent-weixin/openclaw-weixin-cli install` for legacy-host users.
+- **`debug-check` log**: no longer includes `stateDir` / `OPENCLAW_STATE_DIR`.
+- **`package.json`**: removed `peerDependencies`; added `ilink_appid: "bot"` field.
+- **`logUploadUrl`** config field replaced by `channelConfigUpdatedAt`.
+
+### Removed
+
+- **`src/log-upload.ts`** and `registerWeixinCli`: CLI subcommands (`openclaw-weixin uninstall`, `openclaw-weixin logs-upload`) removed from plugin; use `openclaw plugins uninstall @tencent-weixin/openclaw-weixin` instead.
+- **`markdownToPlainText`** from `send.ts`; replaced by `StreamingMarkdownFilter`.
+- **`openclaw-weixin` CLI registration** from `index.ts`.
+- **`PLUGIN_VERSION`** constant from `compat.ts`.
+
 ## 2.0.1
 
 ### Added
