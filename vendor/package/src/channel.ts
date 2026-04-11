@@ -24,9 +24,11 @@ import {
   waitForWeixinLogin,
 } from "./auth/login-qr.js";
 import type { WeixinQrStartResult, WeixinQrWaitResult } from "./auth/login-qr.js";
-import { monitorWeixinProvider } from "./monitor/monitor.js";
+// Lazy-imported inside startAccount to avoid pulling in the monitor -> process-message ->
+// command-auth chain during plugin registration, which can re-enter plugin/provider registry
+// resolution before the account actually starts.
 import { sendWeixinMediaFile } from "./messaging/send-media.js";
-import { sendMessageWeixin } from "./messaging/send.js";
+import { sendMessageWeixin, StreamingMarkdownFilter } from "./messaging/send.js";
 import { downloadRemoteImageToTemp } from "./cdn/upload.js";
 
 /** Returns true when mediaUrl refers to a local filesystem path (absolute or relative). */
@@ -119,7 +121,10 @@ async function sendWeixinOutbound(params: {
   if (!params.contextToken) {
     aLog.warn(`sendWeixinOutbound: contextToken missing for to=${params.to}, sending without context`);
   }
-  const result = await sendMessageWeixin({ to: params.to, text: params.text, opts: {
+  const f = new StreamingMarkdownFilter();
+  const rawText = params.text ?? "";
+  const filteredText = f.feed(rawText) + f.flush();
+  const result = await sendMessageWeixin({ to: params.to, text: filteredText, opts: {
     baseUrl: account.baseUrl,
     token: account.token,
     contextToken: params.contextToken,
@@ -168,6 +173,7 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
       "When the user asks you to find an image from the web, use a web search or browser tool to find a suitable image URL, then send it using the message tool with 'media' set to that HTTPS image URL — do NOT download the image first.",
       "IMPORTANT: When generating or saving a file to send, always use an absolute path (e.g. /tmp/photo.png), never a relative path like ./photo.png. Relative paths cannot be resolved and the file will not be delivered.",
       "IMPORTANT: When creating a cron job (scheduled task) for the current Weixin user, you MUST set delivery.to to the user's Weixin ID (the xxx@im.wechat address from the current conversation) AND set delivery.accountId to the current AccountId. Without an explicit 'to', the cron delivery will fail with 'requires target'. Without an explicit 'accountId', the message may be sent from the wrong bot account. Example: delivery: { mode: 'announce', channel: 'openclaw-weixin', to: '<current_user_id@im.wechat>', accountId: '<current_AccountId>' }.",
+      "IMPORTANT: When outputting a MEDIA: directive to send a file, the MEDIA: tag MUST be on its own line — never inline with other text. Correct:\nSome text here\nMEDIA:/path/to/file.mp4\nIncorrect: Some text here MEDIA:/path/to/file.mp4",
     ],
   },
   reload: { configPrefixes: ["channels.openclaw-weixin"] },
@@ -382,6 +388,7 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
       const logPath = aLog.getLogFilePath();
       ctx.log?.info?.(`[${account.accountId}] weixin logs: ${logPath}`);
 
+      const { monitorWeixinProvider } = await import("./monitor/monitor.js");
       return monitorWeixinProvider({
         baseUrl: account.baseUrl,
         cdnBaseUrl: account.cdnBaseUrl,
