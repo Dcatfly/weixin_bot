@@ -1,3 +1,42 @@
+## 2.1.9
+
+### Added
+
+- **`StreamingMarkdownFilter`** (`src/messaging/markdown-filter.ts`): streaming character-level Markdown filter replaces `markdownToPlainText`; Markdown goes from effectively stripped to partially preserved (code fences, bold, tables, inline code pass through; H5/H6 headings and images are removed).
+- **Outbound hook support** (`src/messaging/outbound-hooks.ts`): `message_sending` (pre-send interception/modification) and `message_sent` (post-send notification) hooks wired into all outbound paths — `sendWeixinOutbound`, `sendMedia`, and the `deliver` callback in `process-message`.
+- **`apiGetFetch`**: new GET request wrapper in `api.ts`, shared by QR code and status polling endpoints.
+- **`iLink-App-Id` and `iLink-App-ClientVersion` HTTP headers** added to all API requests; values derived from `ilink_appid` and `version` in `package.json`.
+- **CDN full-URL support**: `upload_full_url` / `full_url` fields added to API types; server-provided full URLs take precedence over client-constructed CDN URLs for both upload and download.
+- **QR login IDC redirect**: `scaned_but_redirect` status handled — polling host switches dynamically via `redirect_host` field without restarting the login session.
+- **`ENABLE_CDN_URL_FALLBACK`** flag in `cdn-url.ts` controlling fallback to client-constructed CDN URLs when server omits `full_url`.
+- **MEDIA: tag placement hint** added to channel system prompt: the `MEDIA:` directive must appear on its own line.
+
+### Changed
+
+- **QR code fetch uses fixed base URL** `https://ilinkai.weixin.qq.com`; `apiBaseUrl` config is no longer required before initiating login.
+- **QR polling error tolerance**: network/gateway errors (e.g. Cloudflare 524) now return `wait` status instead of throwing, keeping the polling loop alive.
+- **`apiFetch` renamed to `apiPostFetch`**; all POST API calls updated accordingly.
+- **`sendWeixinOutbound`** now applies `StreamingMarkdownFilter` and outbound hooks before sending text.
+- **`monitorWeixinProvider`** lazy-imported inside `startAccount` to prevent plugin/provider registry re-entrance during plugin registration.
+- **`disableBlockStreaming`** defaulted to `true` in reply dispatch.
+- **Config schema**: `logUploadUrl` field replaced by `channelConfigUpdatedAt` (ISO 8601); bumped on every successful login to trigger gateway config reload from disk.
+- **Multi-account context isolation docs**: config key updated from `agents.mode per-channel-per-peer` to `session.dmScope per-account-channel-peer`.
+- **`triggerWeixinChannelReload()`** always writes `channelConfigUpdatedAt` on login (no longer conditional on absence of channel config).
+
+### Fixed
+
+- **QR login re-entrance** (`channel.ts`): lazy-importing `monitorWeixinProvider` avoids pulling the monitor → process-message → command-auth chain at plugin registration time.
+- **Initialization side effect** (`process-message.ts`): lazy-import of auth resolution functions prevents `ensureContextWindowCacheLoaded` from firing during module init, which caused `loadOpenClawPlugins` re-entrance.
+- **Media download with `full_url`**: image, voice, file, and video items now download correctly when the server returns `full_url` without `encrypt_query_param`.
+
+### Removed
+
+- **`src/log-upload.ts`** and `registerWeixinCli` CLI subcommand registration removed; use `openclaw plugins uninstall @tencent-weixin/openclaw-weixin` instead.
+- **`markdownToPlainText`** from `send.ts` (superseded by `StreamingMarkdownFilter`).
+- **`PLUGIN_VERSION`** constant from `compat.ts`.
+- **`peerDependencies`** for `openclaw` removed from `package.json`.
+- **`mediaUrl` parameter** removed from `sendWeixinOutbound` signature (was unused).
+
 ## 2.0.1
 
 ### Added
