@@ -6,6 +6,19 @@
 /** Common request metadata attached to every CGI request. */
 export interface BaseInfo {
   channel_version?: string;
+  /**
+   * Self-declared identity of the upstream bot/app, analogous to HTTP
+   * `User-Agent`. Filled from `channels.openclaw-weixin.botAgent` in
+   * openclaw.json; defaults to `"OpenClaw"` when unset.
+   *
+   * Format: UA-style `Name/Version` tokens, optionally followed by
+   * `(comment)`, multiple tokens space-separated. ASCII only, total
+   * length <= 256 bytes after sanitization.
+   *
+   * For observability only (logging, monitoring aggregation); not used
+   * for authentication or routing.
+   */
+  bot_agent?: string;
 }
 
 /** proto: UploadMediaType */
@@ -44,6 +57,8 @@ export interface GetUploadUrlResp {
   upload_param?: string;
   /** 缩略图上传加密参数，无缩略图时为空 */
   thumb_upload_param?: string;
+  /** 完整上传 URL（服务端直接返回，无需客户端拼接） */
+  upload_full_url?: string;
 }
 
 export const MessageType = {
@@ -77,6 +92,8 @@ export interface CDNMedia {
   aes_key?: string;
   /** 加密类型: 0=只加密fileid, 1=打包缩略图/中图等信息 */
   encrypt_type?: number;
+  /** 完整下载 URL（服务端直接返回，无需客户端拼接） */
+  full_url?: string;
 }
 
 export interface ImageItem {
@@ -219,4 +236,26 @@ export interface GetConfigResp {
   errmsg?: string;
   /** Base64-encoded typing ticket for sendTyping. */
   typing_ticket?: string;
+}
+
+/** proto: NotifyStopReq — notify server when the channel client is stopping. */
+export interface NotifyStopReq {
+  base_info?: BaseInfo;
+}
+
+/** proto: NotifyStopResp */
+export interface NotifyStopResp {
+  ret?: number;
+  errmsg?: string;
+}
+
+/** proto: NotifyStartReq — notify server when the channel client is starting. */
+export interface NotifyStartReq {
+  base_info?: BaseInfo;
+}
+
+/** proto: NotifyStartResp */
+export interface NotifyStartResp {
+  ret?: number;
+  errmsg?: string;
 }
