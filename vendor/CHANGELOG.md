@@ -1,3 +1,7 @@
+## 2.3.1
+
+> Changelog pending — please review the diff manually.
+
 ## 2.0.1
 
 ### Added
